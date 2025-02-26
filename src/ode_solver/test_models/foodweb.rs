@@ -814,6 +814,9 @@ where
     fn set_params(&mut self, _p: &Self::V) {
         unimplemented!()
     }
+    fn get_params(&self, _p: &mut Self::V) {
+        unimplemented!()
+    }
 }
 
 #[cfg(feature = "diffsl")]

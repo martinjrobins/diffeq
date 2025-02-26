@@ -2,9 +2,9 @@ use std::cell::RefCell;
 
 use crate::{
     error::DiffsolError, other_error, OdeEquations, OdeSolverMethod, OdeSolverProblem,
-    OdeSolverState, Vector,
+    OdeSolverState, Scalar, Vector,
 };
-use num_traits::One;
+use num_traits::{abs, One};
 
 #[derive(Clone)]
 pub struct HermiteInterpolator<V>
@@ -35,6 +35,18 @@ where
 {
     pub fn new(ys: Vec<V>, ydots: Vec<V>, ts: Vec<V::T>) -> Self {
         HermiteInterpolator { ys, ydots, ts }
+    }
+    pub fn last_t(&self) -> Option<V::T> {
+        if self.ts.is_empty() {
+            return None;
+        }
+        Some(self.ts[self.ts.len() - 1])
+    }
+    pub fn last_h(&self) -> Option<V::T> {
+        if self.ts.len() < 2 {
+            return None;
+        }
+        Some(self.ts[self.ts.len() - 1] - self.ts[self.ts.len() - 2])
     }
     pub fn reset<'a, Eqn, Method, State>(
         &mut self,
@@ -171,6 +183,17 @@ where
         }
     }
 
+    pub fn last_t(&self) -> Eqn::T {
+        self.segment
+            .borrow()
+            .last_t()
+            .expect("segment should not be empty")
+    }
+
+    pub fn last_h(&self) -> Option<Eqn::T> {
+        self.segment.borrow().last_h()
+    }
+
     pub fn problem(&self) -> &'a OdeSolverProblem<Eqn> {
         self.solver.borrow().problem()
     }
@@ -193,11 +216,22 @@ where
         }
 
         // if t is before first segment or after last segment, return error
-        if t < self.checkpoints[0].as_ref().t
-            || t > self.checkpoints[self.checkpoints.len() - 1].as_ref().t
+        let h = self.last_h().unwrap_or(Eqn::T::one());
+        let troundoff = Eqn::T::from(100.0) * Eqn::T::EPSILON * (abs(t) + abs(h));
+        if t < self.checkpoints[0].as_ref().t - troundoff
+            || t > self.checkpoints[self.checkpoints.len() - 1].as_ref().t + troundoff
         {
             return Err(other_error!("t is outside of the checkpoints"));
         }
+
+        // snap t to nearest checkpoint if outside of range
+        let t = if t < self.checkpoints[0].as_ref().t {
+            self.checkpoints[0].as_ref().t
+        } else if t > self.checkpoints[self.checkpoints.len() - 1].as_ref().t {
+            self.checkpoints[self.checkpoints.len() - 1].as_ref().t
+        } else {
+            t
+        };
 
         // else find idx of segment
         let idx = self

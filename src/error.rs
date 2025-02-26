@@ -55,6 +55,8 @@ pub enum OdeSolverError {
         state_time
     )]
     StopTimeBeforeCurrentTime { stop_time: f64, state_time: f64 },
+    #[error("Stop time is at the current state time")]
+    StopTimeAtCurrentTime,
     #[error("Interpolation time is after current time")]
     InterpolationTimeAfterCurrentTime,
     #[error("Interpolation time is not within the current step. Step size is zero after calling state_mut()")]
@@ -81,6 +83,8 @@ pub enum OdeSolverError {
     SundialsError(String),
     #[error("Problem not set")]
     ProblemNotSet,
+    #[error("Jacobian not available")]
+    JacobianNotAvailable,
     #[error("Error: {0}")]
     Other(String),
 }

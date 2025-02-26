@@ -126,6 +126,10 @@ impl<Eqn: OdeEquations> OdeEquations for NoAug<Eqn> {
     fn set_params(&mut self, _p: &Self::V) {
         panic!("This should never be called")
     }
+
+    fn get_params(&self, _p: &mut Self::V) {
+        panic!("This should never be called")
+    }
 }
 
 impl<Eqn: OdeEquationsImplicit> AugmentedOdeEquations<Eqn> for NoAug<Eqn> {
@@ -241,6 +245,9 @@ pub trait OdeEquations: for<'a> OdeEquationsRef<'a> {
 
     /// sets the current parameters of the equations
     fn set_params(&mut self, p: &Self::V);
+
+    /// gets the current parameters of the equations
+    fn get_params(&self, p: &mut Self::V);
 }
 
 //impl<'a, T: OdeEquations> OdeEquationsRef<'a> for &'a mut T {
@@ -299,6 +306,10 @@ impl<T: OdeEquations> OdeEquations for &'_ T {
     }
 
     fn set_params(&mut self, _p: &Self::V) {
+        unimplemented!()
+    }
+
+    fn get_params(&self, _p: &mut Self::V) {
         unimplemented!()
     }
 }
@@ -421,7 +432,10 @@ where
         self.init.nstates()
     }
     fn nout(&self) -> usize {
-        self.rhs.nout()
+        self.out
+            .as_ref()
+            .map(|out| out.nout())
+            .unwrap_or(self.rhs.nout())
     }
     fn nparams(&self) -> usize {
         self.rhs.nparams()
@@ -491,6 +505,9 @@ where
     }
     fn set_params(&mut self, p: &Self::V) {
         self.params_mut().copy_from(p);
+    }
+    fn get_params(&self, p: &mut Self::V) {
+        p.copy_from(self.params());
     }
 }
 

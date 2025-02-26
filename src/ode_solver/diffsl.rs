@@ -684,6 +684,12 @@ impl<M: Matrix<T = T>, CG: CodegenModule> OdeEquations for DiffSl<M, CG> {
             self.context.data.borrow_mut().as_mut_slice(),
         );
     }
+
+    fn get_params(&self, p: &mut Self::V) {
+        self.context
+            .compiler
+            .get_inputs(p.as_mut_slice(), self.context.data.borrow().as_slice());
+    }
 }
 
 #[cfg(test)]

@@ -155,7 +155,7 @@ pub trait Vector:
     fn add_scalar_mut(&mut self, scalar: Self::T);
     fn component_mul_assign(&mut self, other: &Self);
     fn component_div_assign(&mut self, other: &Self);
-    fn filter_indices<F: Fn(Self::T) -> bool>(&self, f: F) -> Self::Index;
+    fn partition_indices<F: Fn(Self::T) -> bool>(&self, f: F) -> (Self::Index, Self::Index);
     fn binary_fold<B, F>(&self, other: &Self, init: B, f: F) -> B
     where
         F: Fn(B, Self::T, Self::T, IndexType) -> B;
@@ -164,9 +164,21 @@ pub trait Vector:
             self[indices[i]] = value;
         }
     }
+    /// copy from `other` at the indices specified by `indices`
+    /// generaly `self` and `other` have the same length
     fn copy_from_indices(&mut self, other: &Self, indices: &Self::Index) {
         for i in 0..indices.len() {
             self[indices[i]] = other[indices[i]];
+        }
+    }
+    fn gather(&mut self, other: &Self, indices: &Self::Index) {
+        for i in 0..indices.len() {
+            self[i] = other[indices[i]];
+        }
+    }
+    fn scatter(&self, indices: &Self::Index, other: &mut Self) {
+        for i in 0..indices.len() {
+            other[indices[i]] = self[i];
         }
     }
     fn assert_eq_st(&self, other: &Self, tol: Self::T) {

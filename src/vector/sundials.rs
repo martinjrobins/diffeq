@@ -586,14 +586,20 @@ impl Vector for SundialsVector {
             self[i] = f(self[i]);
         }
     }
-    fn filter_indices<F: Fn(Self::T) -> bool>(&self, f: F) -> Self::Index {
-        let mut indices = vec![];
+    fn partition_indices<F: Fn(Self::T) -> bool>(&self, f: F) -> (Self::Index, Self::Index) {
+        let mut indices_true = vec![];
+        let mut indices_false = vec![];
         for i in 0..self.len() {
             if f(self[i]) {
-                indices.push(i);
+                indices_true.push(i);
+            } else {
+                indices_false.push(i);
             }
         }
-        SundialsIndexVector(indices)
+        (
+            SundialsIndexVector(indices_true),
+            SundialsIndexVector(indices_false),
+        )
     }
     fn from_element(nstates: usize, value: Self::T) -> Self {
         let v = SundialsVector::new_serial(nstates);
@@ -714,9 +720,11 @@ mod tests {
         let mut v = SundialsVector::new_serial(2);
         v[0] = 1.0;
         v[1] = 2.0;
-        let indices = v.filter_indices(|x| x > 1.0);
-        assert_eq!(indices.len(), 1);
-        assert_eq!(indices[0], 1);
+        let (indices_true, indicies_false) = v.partition_indices(|x| x > 1.0);
+        assert_eq!(indices_true.len(), 1);
+        assert_eq!(indices_true[0], 1);
+        assert_eq!(indicies_false.len(), 1);
+        assert_eq!(indicies_false[0], 0);
     }
 
     #[test]

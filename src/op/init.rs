@@ -23,7 +23,7 @@ impl<'a, Eqn: OdeEquationsImplicit> InitOp<'a, Eqn> {
     pub fn new(eqn: &'a Eqn, t0: Eqn::T, y0: &Eqn::V) -> Self {
         let n = eqn.rhs().nstates();
         let mass_diagonal = eqn.mass().unwrap().matrix(t0).diagonal();
-        let algebraic_indices = mass_diagonal.filter_indices(|x| x == Eqn::T::zero());
+        let (algebraic_indices, _) = mass_diagonal.partition_indices(|x| x == Eqn::T::zero());
 
         let rhs_jac = eqn.rhs().jacobian(y0, t0);
         let mass = eqn.mass().unwrap().matrix(t0);

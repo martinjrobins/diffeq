@@ -301,6 +301,9 @@ where
     fn set_params(&mut self, p: &Self::V) {
         self.eqn.set_params(p);
     }
+    fn get_params(&self, p: &mut Self::V) {
+        self.eqn.get_params(p);
+    }
 }
 
 impl<Eqn: OdeEquationsSens> AugmentedOdeEquations<Eqn> for SensEquations<'_, Eqn> {

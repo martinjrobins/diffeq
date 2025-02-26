@@ -1,16 +1,83 @@
-use std::cell::RefCell;
-use std::rc::Rc;
+use std::cell::Ref;
 
 use crate::{
     error::{DiffsolError, OdeSolverError},
-    matrix::default_solver::DefaultSolver,
     ode_solver_error,
     scalar::Scalar,
-    AdjointContext, AdjointEquations, AugmentedOdeEquations, Checkpointing, DefaultDenseMatrix,
-    DenseMatrix, HermiteInterpolator, LinearSolver, Matrix, NonLinearOp, OdeEquations,
-    OdeEquationsAdjoint, OdeEquationsSens, OdeSolverProblem, OdeSolverState, Op, SensEquations,
-    StateRef, StateRefMut, Vector, VectorViewMut,
+    AugmentedOdeEquations, Checkpointing, DefaultDenseMatrix, DenseMatrix, HermiteInterpolator,
+    Matrix, NonLinearOp, OdeEquations, OdeSolverProblem, OdeSolverState, Op, StateRef, StateRefMut,
+    Vector, VectorViewMut,
 };
+
+/// Utility function to write out the solution at a given timepoint
+/// This function is used by the `solve_dense` method to write out the solution at a given timepoint.
+fn dense_write_out<'a, Eqn: OdeEquations + 'a, S: OdeSolverMethod<'a, Eqn>>(
+    s: &S,
+    y_out: &mut <Eqn::V as DefaultDenseMatrix>::M,
+    t_eval: &[Eqn::T],
+    i: usize,
+) -> Result<(), DiffsolError>
+where
+    Eqn::V: DefaultDenseMatrix,
+{
+    let mut y_out = y_out.column_mut(i);
+    let t = t_eval[i];
+    if s.problem().integrate_out {
+        let g = s.interpolate_out(t)?;
+        y_out.copy_from(&g);
+    } else {
+        let y = s.interpolate(t)?;
+        match s.problem().eqn.out() {
+            Some(out) => y_out.copy_from(&out.call(&y, t_eval[i])),
+            None => y_out.copy_from(&y),
+        }
+    }
+    Ok(())
+}
+
+/// utility function to write out the solution at a given timepoint
+/// This function is used by the `solve` method to write out the solution at a given timepoint.
+fn write_out<'a, Eqn: OdeEquations + 'a, S: OdeSolverMethod<'a, Eqn>>(
+    s: &S,
+    ret_y: &mut Vec<Eqn::V>,
+    ret_t: &mut Vec<Eqn::T>,
+) {
+    let t = s.state().t;
+    let y = s.state().y;
+    ret_t.push(t);
+    match s.problem().eqn.out() {
+        Some(out) => {
+            if s.problem().integrate_out {
+                ret_y.push(s.state().g.clone());
+            } else {
+                ret_y.push(out.call(y, t));
+            }
+        }
+        None => ret_y.push(y.clone()),
+    }
+}
+
+fn dense_allocate_return<'a, Eqn: OdeEquations + 'a, S: OdeSolverMethod<'a, Eqn>>(
+    s: &S,
+    t_eval: &[Eqn::T],
+) -> Result<<Eqn::V as DefaultDenseMatrix>::M, DiffsolError>
+where
+    Eqn::V: DefaultDenseMatrix,
+{
+    let nrows = if s.problem().eqn.out().is_some() {
+        s.problem().eqn.out().unwrap().nout()
+    } else {
+        s.problem().eqn.rhs().nstates()
+    };
+    let ret = <<Eqn::V as DefaultDenseMatrix>::M as Matrix>::zeros(nrows, t_eval.len());
+
+    // check t_eval is increasing and all values are greater than or equal to the current time
+    let t0 = s.state().t;
+    if t_eval.windows(2).any(|w| w[0] > w[1] || w[0] < t0) {
+        return Err(ode_solver_error!(InvalidTEval));
+    }
+    Ok(ret)
+}
 
 #[derive(Debug, PartialEq)]
 pub enum OdeSolverStopReason<T: Scalar> {
@@ -72,6 +139,9 @@ where
     /// account the mutated state, this could be expensive for multi-step methods.
     fn state_mut(&mut self) -> StateRefMut<Eqn::V>;
 
+    fn jacobian(&self) -> Option<Ref<Eqn::M>>;
+    fn mass(&self) -> Option<Ref<Eqn::M>>;
+
     /// Step the solution forward by one step, altering the internal state of the solver.
     /// The return value is a `Result` containing the reason for stopping the solver, possible reasons are:
     /// - `InternalTimestep`: The solver has taken a step forward in time, the internal state of the solver is at time self.state().t
@@ -109,57 +179,16 @@ where
     {
         let mut ret_t = Vec::new();
         let mut ret_y = Vec::new();
-        fn write_out<Eqn: OdeEquations>(
-            p: &OdeSolverProblem<Eqn>,
-            ret_y: &mut Vec<Eqn::V>,
-            ret_t: &mut Vec<Eqn::T>,
-            t: Eqn::T,
-            y: &Eqn::V,
-            g: &Eqn::V,
-        ) {
-            ret_t.push(t);
-            match p.eqn.out() {
-                Some(out) => {
-                    if p.integrate_out {
-                        ret_y.push(g.clone());
-                    } else {
-                        ret_y.push(out.call(y, t));
-                    }
-                }
-                None => ret_y.push(y.clone()),
-            }
-        }
 
         // do the main loop
-        write_out(
-            self.problem(),
-            &mut ret_y,
-            &mut ret_t,
-            self.state().t,
-            self.state().y,
-            self.state().g,
-        );
+        write_out(self, &mut ret_y, &mut ret_t);
         self.set_stop_time(final_time)?;
         while self.step()? != OdeSolverStopReason::TstopReached {
-            write_out(
-                self.problem(),
-                &mut ret_y,
-                &mut ret_t,
-                self.state().t,
-                self.state().y,
-                self.state().g,
-            );
+            write_out(self, &mut ret_y, &mut ret_t);
         }
 
         // store the final step
-        write_out(
-            self.problem(),
-            &mut ret_y,
-            &mut ret_t,
-            self.state().t,
-            self.state().y,
-            self.state().g,
-        );
+        write_out(self, &mut ret_y, &mut ret_t);
         let ntimes = ret_t.len();
         let nrows = ret_y[0].len();
         let mut ret_y_matrix = <<Eqn::V as DefaultDenseMatrix>::M as Matrix>::zeros(nrows, ntimes);
@@ -180,125 +209,55 @@ where
         Eqn::V: DefaultDenseMatrix,
         Self: Sized,
     {
-        let nrows = if self.problem().eqn.out().is_some() {
-            self.problem().eqn.out().unwrap().nout()
-        } else {
-            self.problem().eqn.rhs().nstates()
-        };
-        let mut ret = <<Eqn::V as DefaultDenseMatrix>::M as Matrix>::zeros(nrows, t_eval.len());
-
-        // check t_eval is increasing and all values are greater than or equal to the current time
-        let t0 = self.state().t;
-        if t_eval.windows(2).any(|w| w[0] > w[1] || w[0] < t0) {
-            return Err(ode_solver_error!(InvalidTEval));
-        }
-
-        fn write_out<Eqn: OdeEquations>(
-            p: &OdeSolverProblem<Eqn>,
-            y_out: &mut <Eqn::V as DefaultDenseMatrix>::M,
-            t_eval: &[Eqn::T],
-            i: usize,
-            y: Option<&Eqn::V>,
-            g: Option<&Eqn::V>,
-        ) where
-            Eqn::V: DefaultDenseMatrix,
-        {
-            let mut y_out = y_out.column_mut(i);
-            if let Some(g) = g {
-                y_out.copy_from(g);
-            } else if let Some(y) = y {
-                match p.eqn.out() {
-                    Some(out) => y_out.copy_from(&out.call(y, t_eval[i])),
-                    None => y_out.copy_from(y),
-                }
-            }
-        }
+        let mut ret = dense_allocate_return(self, t_eval)?;
 
         // do loop
         self.set_stop_time(t_eval[t_eval.len() - 1])?;
         let mut step_reason = OdeSolverStopReason::InternalTimestep;
-        for (i, t) in t_eval.iter().take(t_eval.len() - 1).enumerate() {
+        for (i, t) in t_eval.iter().enumerate() {
             while self.state().t < *t {
                 step_reason = self.step()?;
             }
-            if self.problem().integrate_out {
-                let g = self.interpolate_out(*t)?;
-
-                write_out(self.problem(), &mut ret, t_eval, i, None, Some(&g));
-            } else {
-                let y = self.interpolate(*t)?;
-                write_out(self.problem(), &mut ret, t_eval, i, Some(&y), None);
-            }
+            dense_write_out(self, &mut ret, t_eval, i)?;
         }
-
-        // do final step
-        while step_reason != OdeSolverStopReason::TstopReached {
-            step_reason = self.step()?;
-        }
-        if self.problem().integrate_out {
-            write_out(
-                self.problem(),
-                &mut ret,
-                t_eval,
-                t_eval.len() - 1,
-                None,
-                Some(self.state().g),
-            );
-        } else {
-            write_out(
-                self.problem(),
-                &mut ret,
-                t_eval,
-                t_eval.len() - 1,
-                Some(self.state().y),
-                None,
-            );
-        }
+        assert_eq!(step_reason, OdeSolverStopReason::TstopReached);
         Ok(ret)
     }
 
-    /// Using the provided state, solve the forwards and adjoint problem from the current time up to `final_time`.
-    /// An output function must be provided and the problem must be setup to integrate this output
-    /// function over time. Returns a tuple of `(g, sgs)`, where `g` is the vector of the integral
-    /// of the output function from the current time to `final_time`, and `sgs` is a `Vec` where
-    /// the ith element is the sensitivities of the ith element of `g` with respect to the
-    /// parameters.
     #[allow(clippy::type_complexity)]
-    fn solve_adjoint<LS: LinearSolver<Eqn::M>>(
-        mut self,
+    fn solve_with_checkpointing(
+        &mut self,
         final_time: Eqn::T,
         max_steps_between_checkpoints: Option<usize>,
-    ) -> Result<(Eqn::V, Vec<Eqn::V>), DiffsolError>
+    ) -> Result<
+        (
+            Checkpointing<'a, Eqn, Self>,
+            <Eqn::V as DefaultDenseMatrix>::M,
+            Vec<Eqn::T>,
+        ),
+        DiffsolError,
+    >
     where
-        Self: AdjointOdeSolverMethod<'a, Eqn>,
-        Eqn: OdeEquationsAdjoint,
-        Eqn::M: DefaultSolver,
         Eqn::V: DefaultDenseMatrix,
         Self: Sized,
     {
-        if self.problem().eqn.out().is_none() {
-            return Err(ode_solver_error!(
-                Other,
-                "Cannot solve adjoint without output function"
-            ));
-        }
-        if !self.problem().integrate_out {
-            return Err(ode_solver_error!(
-                Other,
-                "Cannot solve adjoint without integrating out"
-            ));
-        }
+        let mut ret_t = Vec::new();
+        let mut ret_y = Vec::new();
         let max_steps_between_checkpoints = max_steps_between_checkpoints.unwrap_or(500);
+
+        // allocate checkpoint info
+        let mut nsteps = 0;
         let t0 = self.state().t;
+        let mut checkpoints = vec![self.checkpoint()];
         let mut ts = vec![t0];
         let mut ys = vec![self.state().y.clone()];
         let mut ydots = vec![self.state().dy.clone()];
 
-        // do the main forward solve, saving checkpoints
+        // do the main loop, saving checkpoints
+        write_out(self, &mut ret_y, &mut ret_t);
         self.set_stop_time(final_time)?;
-        let mut nsteps = 0;
-        let mut checkpoints = vec![self.checkpoint()];
         while self.step()? != OdeSolverStopReason::TstopReached {
+            write_out(self, &mut ret_y, &mut ret_t);
             ts.push(self.state().t);
             ys.push(self.state().y.clone());
             ydots.push(self.state().dy.clone());
@@ -311,101 +270,103 @@ where
                 ydots.clear();
             }
         }
+
+        // store the final step
+        write_out(self, &mut ret_y, &mut ret_t);
+        let ntimes = ret_t.len();
+        let nrows = ret_y[0].len();
+        let mut ret_y_matrix = <<Eqn::V as DefaultDenseMatrix>::M as Matrix>::zeros(nrows, ntimes);
+        for (i, y) in ret_y.iter().enumerate() {
+            ret_y_matrix.column_mut(i).copy_from(y);
+        }
+
+        // add final checkpoint
         ts.push(self.state().t);
         ys.push(self.state().y.clone());
         ydots.push(self.state().dy.clone());
         checkpoints.push(self.checkpoint());
 
-        // save integrateed out function
-        let g = self.state().g.clone();
-
-        // construct the adjoint solver
+        // construct checkpointing
         let last_segment = HermiteInterpolator::new(ys, ydots, ts);
-        let adjoint_aug_eqn = self.adjoint_equations(checkpoints, last_segment)?;
-        let mut adjoint_solver = self.default_adjoint_solver::<LS>(adjoint_aug_eqn)?;
+        let checkpointer = Checkpointing::new(
+            self.clone(),
+            checkpoints.len() - 2,
+            checkpoints,
+            Some(last_segment),
+        );
 
-        // solve the adjoint problem
-        adjoint_solver.set_stop_time(t0).unwrap();
-        while adjoint_solver.step()? != OdeSolverStopReason::TstopReached {}
-
-        // correct the adjoint solution for the initial conditions
-        let (mut state, aug_eqn) = adjoint_solver.into_state_and_eqn();
-        let aug_eqn = aug_eqn.unwrap();
-        let state_mut = state.as_mut();
-        aug_eqn.correct_sg_for_init(t0, state_mut.s, state_mut.sg);
-
-        // return the solution
-        Ok((g, state_mut.sg.to_owned()))
+        Ok((checkpointer, ret_y_matrix, ret_t))
     }
 
-    /// Using the provided state, solve the problem up to time `t_eval[t_eval.len()-1]`
-    /// Returns a tuple `(y, sens)`, where `y` is a dense matrix of solution values at timepoints given by `t_eval`,
-    /// and `sens` is a Vec of dense matrices, the ith element of the Vec are the the sensitivities with respect to the ith parameter.
-    /// After the solver has finished, the internal state of the solver is at time `t_eval[t_eval.len()-1]`.
+    /// Solve the problem and write out the solution at the given timepoints, using checkpointing so that
+    /// the solution can be interpolated at any timepoint.
+    /// See [Self::solve_dense] for a similar method that does not use checkpointing.
     #[allow(clippy::type_complexity)]
-    fn solve_dense_sensitivities(
+    fn solve_dense_with_checkpointing(
         &mut self,
         t_eval: &[Eqn::T],
+        max_steps_between_checkpoints: Option<usize>,
     ) -> Result<
         (
+            Checkpointing<'a, Eqn, Self>,
             <Eqn::V as DefaultDenseMatrix>::M,
-            Vec<<Eqn::V as DefaultDenseMatrix>::M>,
         ),
         DiffsolError,
     >
     where
-        Self: SensitivitiesOdeSolverMethod<'a, Eqn>,
-        Eqn: OdeEquationsSens,
-        Eqn::M: DefaultSolver,
         Eqn::V: DefaultDenseMatrix,
         Self: Sized,
     {
-        if self.problem().integrate_out {
-            return Err(ode_solver_error!(
-                Other,
-                "Cannot integrate out when solving for sensitivities"
-            ));
-        }
-        let nrows = self.problem().eqn.rhs().nstates();
-        let mut ret = <<Eqn::V as DefaultDenseMatrix>::M as Matrix>::zeros(nrows, t_eval.len());
-        let mut ret_sens =
-            vec![
-                <<Eqn::V as DefaultDenseMatrix>::M as Matrix>::zeros(nrows, t_eval.len());
-                self.problem().eqn.rhs().nparams()
-            ];
+        let mut ret = dense_allocate_return(self, t_eval)?;
+        let max_steps_between_checkpoints = max_steps_between_checkpoints.unwrap_or(500);
 
-        // check t_eval is increasing and all values are greater than or equal to the current time
+        // allocate checkpoint info
+        let mut nsteps = 0;
         let t0 = self.state().t;
-        if t_eval.windows(2).any(|w| w[0] > w[1] || w[0] < t0) {
-            return Err(ode_solver_error!(InvalidTEval));
-        }
+        let mut checkpoints = vec![self.checkpoint()];
+        let mut ts = vec![t0];
+        let mut ys = vec![self.state().y.clone()];
+        let mut ydots = vec![self.state().dy.clone()];
 
-        // do loop
+        // do loop, saving checkpoints
         self.set_stop_time(t_eval[t_eval.len() - 1])?;
         let mut step_reason = OdeSolverStopReason::InternalTimestep;
-        for (i, t) in t_eval.iter().take(t_eval.len() - 1).enumerate() {
+        for (i, t) in t_eval.iter().enumerate() {
             while self.state().t < *t {
                 step_reason = self.step()?;
+                ts.push(self.state().t);
+                ys.push(self.state().y.clone());
+                ydots.push(self.state().dy.clone());
+                nsteps += 1;
+                if nsteps > max_steps_between_checkpoints
+                    && step_reason != OdeSolverStopReason::TstopReached
+                {
+                    checkpoints.push(self.checkpoint());
+                    nsteps = 0;
+                    ts.clear();
+                    ys.clear();
+                    ydots.clear();
+                }
             }
-            let y = self.interpolate(*t)?;
-            ret.column_mut(i).copy_from(&y);
-            let s = self.interpolate_sens(*t)?;
-            for (j, s_j) in s.iter().enumerate() {
-                ret_sens[j].column_mut(i).copy_from(s_j);
-            }
+            dense_write_out(self, &mut ret, t_eval, i)?;
         }
+        assert_eq!(step_reason, OdeSolverStopReason::TstopReached);
 
-        // do final step
-        while step_reason != OdeSolverStopReason::TstopReached {
-            step_reason = self.step()?;
-        }
-        let y = self.state().y;
-        ret.column_mut(t_eval.len() - 1).copy_from(y);
-        let s = self.state().s;
-        for (j, s_j) in s.iter().enumerate() {
-            ret_sens[j].column_mut(t_eval.len() - 1).copy_from(s_j);
-        }
-        Ok((ret, ret_sens))
+        // add final checkpoint
+        checkpoints.push(self.checkpoint());
+
+        // construct the adjoint equations
+        let last_segment = HermiteInterpolator::new(ys, ydots, ts);
+
+        // construct checkpointing
+        let checkpointer = Checkpointing::new(
+            self.clone(),
+            checkpoints.len() - 2,
+            checkpoints,
+            Some(last_segment),
+        );
+
+        Ok((checkpointer, ret))
     }
 }
 
@@ -415,58 +376,7 @@ where
     AugmentedEqn: AugmentedOdeEquations<Eqn>,
 {
     fn into_state_and_eqn(self) -> (Self::State, Option<AugmentedEqn>);
-}
-
-pub trait SensitivitiesOdeSolverMethod<'a, Eqn>:
-    AugmentedOdeSolverMethod<'a, Eqn, SensEquations<'a, Eqn>>
-where
-    Eqn: OdeEquationsSens + 'a,
-{
-}
-
-pub trait AdjointOdeSolverMethod<'a, Eqn>: OdeSolverMethod<'a, Eqn>
-where
-    Eqn: OdeEquationsAdjoint + 'a,
-    Self: 'a,
-{
-    type DefaultAdjointSolver: AugmentedOdeSolverMethod<
-        'a,
-        Eqn,
-        AdjointEquations<'a, Eqn, Self>,
-        State = Self::State,
-    >;
-
-    fn default_adjoint_solver<LS: LinearSolver<Eqn::M>>(
-        self,
-        aug_eqn: AdjointEquations<'a, Eqn, Self>,
-    ) -> Result<Self::DefaultAdjointSolver, DiffsolError>;
-
-    fn adjoint_equations(
-        &self,
-        checkpoints: Vec<Self::State>,
-        last_segment: HermiteInterpolator<Eqn::V>,
-    ) -> Result<AdjointEquations<'a, Eqn, Self>, DiffsolError>
-    where
-        Eqn::M: DefaultSolver,
-        Eqn::V: DefaultDenseMatrix,
-    {
-        let problem = self.problem();
-        let checkpointer_solver = self.clone();
-
-        // construct checkpointing
-        let checkpointer = Checkpointing::new(
-            checkpointer_solver,
-            checkpoints.len() - 2,
-            checkpoints,
-            Some(last_segment),
-        );
-
-        // construct adjoint equations and problem
-        let context = Rc::new(RefCell::new(AdjointContext::new(checkpointer)));
-        let new_augmented_eqn = AdjointEquations::new(problem, context, true);
-
-        Ok(new_augmented_eqn)
-    }
+    fn augmented_eqn(&self) -> Option<&AugmentedEqn>;
 }
 
 #[cfg(test)]
@@ -476,7 +386,8 @@ mod test {
             exponential_decay_problem, exponential_decay_problem_adjoint,
             exponential_decay_problem_sens,
         },
-        scale, NalgebraLU, OdeSolverMethod, Vector,
+        scale, AdjointOdeSolverMethod, NalgebraLU, OdeEquations, OdeSolverMethod, Op,
+        SensitivitiesOdeSolverMethod, Vector,
     };
 
     #[test]
@@ -498,7 +409,7 @@ mod test {
 
     #[test]
     fn test_solve_integrate_out() {
-        let (problem, _soln) = exponential_decay_problem_adjoint::<nalgebra::DMatrix<f64>>();
+        let (problem, _soln) = exponential_decay_problem_adjoint::<nalgebra::DMatrix<f64>>(true);
         let mut s = problem.bdf::<NalgebraLU<f64>>().unwrap();
 
         let k = 0.1;
@@ -533,7 +444,7 @@ mod test {
 
     #[test]
     fn test_dense_solve_integrate_out() {
-        let (problem, soln) = exponential_decay_problem_adjoint::<nalgebra::DMatrix<f64>>();
+        let (problem, soln) = exponential_decay_problem_adjoint::<nalgebra::DMatrix<f64>>(true);
         let mut s = problem.bdf::<NalgebraLU<f64>>().unwrap();
 
         let t_eval = soln.solution_points.iter().map(|p| p.t).collect::<Vec<_>>();
@@ -570,19 +481,26 @@ mod test {
 
     #[test]
     fn test_solve_adjoint() {
-        let (problem, soln) = exponential_decay_problem_adjoint::<nalgebra::DMatrix<f64>>();
-        let s = problem.bdf::<NalgebraLU<f64>>().unwrap();
+        let (problem, soln) = exponential_decay_problem_adjoint::<nalgebra::DMatrix<f64>>(true);
+        let mut s = problem.bdf::<NalgebraLU<f64>>().unwrap();
 
         let final_time = soln.solution_points[soln.solution_points.len() - 1].t;
-        let (g, gs_adj) = s
-            .solve_adjoint::<NalgebraLU<f64>>(final_time, None)
-            .unwrap();
+        let (checkpointer, _y, _t) = s.solve_with_checkpointing(final_time, None).unwrap();
+        let g = s.state().g;
         g.assert_eq_norm(
             &soln.solution_points[soln.solution_points.len() - 1].state,
             problem.out_atol.as_ref().unwrap(),
             problem.out_rtol.unwrap(),
             15.0,
         );
+        let adjoint_solver = problem
+            .bdf_solver_adjoint::<NalgebraLU<f64>, _>(checkpointer, None)
+            .unwrap();
+        let state = adjoint_solver
+            .solve_adjoint_backwards_pass(&[], &[])
+            .unwrap();
+
+        let gs_adj = state.sg;
         for (j, soln_pts) in soln.sens_solution_points.unwrap().iter().enumerate() {
             gs_adj[j].assert_eq_norm(
                 &soln_pts[0].state,
@@ -590,6 +508,19 @@ mod test {
                 problem.out_rtol.unwrap(),
                 15.0,
             );
+        }
+    }
+
+    #[test]
+    fn test_solve_checkpointing() {
+        let (problem, soln) = exponential_decay_problem::<nalgebra::DMatrix<f64>>(false);
+        let mut s = problem.bdf::<NalgebraLU<f64>>().unwrap();
+        let final_time = soln.solution_points[soln.solution_points.len() - 1].t;
+        let (checkpointer, _y, _t) = s.solve_with_checkpointing(final_time, None).unwrap();
+        let mut y = nalgebra::DVector::zeros(problem.eqn.rhs().nstates());
+        for point in soln.solution_points.iter() {
+            checkpointer.interpolate(point.t, &mut y).unwrap();
+            y.assert_eq_norm(&point.state, &problem.atol, problem.rtol, 100.0);
         }
     }
 }

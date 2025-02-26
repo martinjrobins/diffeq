@@ -53,7 +53,7 @@ pub trait ConstantOpSens: ConstantOp {
 pub trait ConstantOpSensAdjoint: ConstantOp {
     /// Compute the product of the transpose of the gradient of F wrt a parameter vector p with a given vector `-J_p^T(x, t) * v`.
     /// Note that the vector v is of size nstates() and the result is of size nparam().
-    fn sens_transpose_mul_inplace(&self, _t: Self::T, _v: &Self::V, _y: &mut Self::V);
+    fn sens_transpose_mul_inplace(&self, t: Self::T, v: &Self::V, y: &mut Self::V);
 
     /// Compute the negative transpose of the gradient of the operator wrt a parameter vector p and return it.
     /// See [Self::sens_adjoint_inplace] for a non-allocating version.

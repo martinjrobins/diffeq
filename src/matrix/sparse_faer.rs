@@ -192,6 +192,10 @@ impl<T: Scalar> Matrix for SparseColMat<T> {
         Some(self.0.symbolic())
     }
 
+    fn into_transpose(self) -> Self {
+        Self(self.0.transpose())
+    }
+
     fn set_data_with_indices(
         &mut self,
         dst_indices: &<Self::V as Vector>::Index,

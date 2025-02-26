@@ -201,14 +201,20 @@ impl<T: Scalar> Vector for DVector<T> {
     fn component_mul_assign(&mut self, other: &Self) {
         self.component_mul_assign(other);
     }
-    fn filter_indices<F: Fn(T) -> bool>(&self, f: F) -> Self::Index {
-        let mut indices = vec![];
+    fn partition_indices<F: Fn(T) -> bool>(&self, f: F) -> (Self::Index, Self::Index) {
+        let mut indices_true = vec![];
+        let mut indices_false = vec![];
         for (i, &x) in self.iter().enumerate() {
             if f(x) {
-                indices.push(i as IndexType);
+                indices_true.push(i as IndexType);
+            } else {
+                indices_false.push(i as IndexType);
             }
         }
-        Self::Index::from_vec(indices)
+        (
+            Self::Index::from_vec(indices_true),
+            Self::Index::from_vec(indices_false),
+        )
     }
     fn binary_fold<B, F>(&self, other: &Self, init: B, f: F) -> B
     where

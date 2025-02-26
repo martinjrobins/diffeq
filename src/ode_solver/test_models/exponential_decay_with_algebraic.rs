@@ -223,7 +223,9 @@ pub fn exponential_decay_with_algebraic_problem<M: Matrix + 'static>(
 }
 
 #[allow(clippy::type_complexity)]
-pub fn exponential_decay_with_algebraic_adjoint_problem<M: Matrix + 'static>() -> (
+pub fn exponential_decay_with_algebraic_adjoint_problem<M: Matrix + 'static>(
+    integrate_out: bool,
+) -> (
     OdeSolverProblem<impl OdeEquationsAdjoint<M = M, V = M::V, T = M::T>>,
     OdeSolverSolution<M::V>,
 ) {
@@ -231,7 +233,7 @@ pub fn exponential_decay_with_algebraic_adjoint_problem<M: Matrix + 'static>() -
     let nout = 1;
     let problem = OdeBuilder::<M>::new()
         .p([a])
-        .integrate_out(true)
+        .integrate_out(integrate_out)
         .rhs_adjoint_implicit(
             exponential_decay_with_algebraic::<M>,
             exponential_decay_with_algebraic_jacobian::<M>,

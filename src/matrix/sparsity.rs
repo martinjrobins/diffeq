@@ -20,7 +20,7 @@ pub trait MatrixSparsity<M: Matrix>: Sized + Clone {
     fn union(self, other: M::SparsityRef<'_>) -> Result<M::Sparsity, DiffsolError>;
     fn new_diagonal(n: IndexType) -> Self;
     fn as_ref(&self) -> M::SparsityRef<'_>;
-    fn get_index(&self, rows: &[IndexType], cols: &[IndexType]) -> <M::V as Vector>::Index;
+    fn get_index(&self, indices: Vec<(IndexType, IndexType)>) -> <M::V as Vector>::Index;
 }
 
 pub trait MatrixSparsityRef<'a, M: Matrix> {
@@ -29,6 +29,7 @@ pub trait MatrixSparsityRef<'a, M: Matrix> {
     fn is_sparse() -> bool;
     fn indices(&self) -> Vec<(IndexType, IndexType)>;
     fn to_owned(&self) -> M::Sparsity;
+    fn get_index(&self, indices: Vec<(IndexType, IndexType)>) -> <M::V as Vector>::Index;
 }
 
 #[derive(Clone)]

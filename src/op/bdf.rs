@@ -36,6 +36,7 @@ impl<Eqn: OdeEquationsImplicit> BdfCallable<Eqn> {
             sparsity: self.sparsity.clone(),
         }
     }
+
     // F(y) = M (y - y0 + psi) - c * f(y) = 0
     // M = I
     // dg = f(y)
@@ -81,6 +82,14 @@ impl<Eqn: OdeEquationsImplicit> BdfCallable<Eqn> {
     }
     pub fn eqn_mut(&mut self) -> &mut Eqn {
         &mut self.eqn
+    }
+    pub fn jacobian_algebraic(&self) -> Option<(Eqn::M, Eqn::M)> {
+        let rhs_jac = self.rhs_jac.borrow();
+        let mass_jac = self.mass_jac.borrow();
+        Some((rhs_jac.clone(), mass_jac.clone()))
+    }
+    pub fn rhs_jac(&self) -> Ref<Eqn::M> {
+        self.rhs_jac.borrow()
     }
     pub fn new(eqn: Eqn) -> Self {
         let n = eqn.rhs().nstates();
